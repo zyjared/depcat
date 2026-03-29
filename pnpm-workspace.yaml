@@ -1,0 +1,12 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+catalogs:
+  dev:
+    "@biomejs/biome": "^2.4.9"
+    "@types/node": "^25.5.0"
+    rolldown: "^1.0.0-rc.12"
+    tsx: "latest"
+    typescript: "^6.0.2"
+    vitest: "^4.1.2"
