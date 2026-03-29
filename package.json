@@ -1,0 +1,37 @@
+{
+  "name": "depcat",
+  "version": "0.0.1",
+  "description": "Sync pnpm workspace catalog from a config file",
+  "type": "module",
+  "bin": {
+    "depcat": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zyjared/depcat"
+  },
+  "scripts": {
+    "build": "rolldown -c",
+    "check": "biome check .",
+    "check:fix": "biome check --write .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "release": "pnpm version",
+    "prepublishOnly": "pnpm check && pnpm typecheck && pnpm test && pnpm build"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.9",
+    "@types/node": "^25.5.0",
+    "rolldown": "^1.0.0-rc.12",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.2"
+  },
+  "packageManager": "pnpm@10.33.0"
+}
