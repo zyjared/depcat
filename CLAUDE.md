@@ -2,10 +2,6 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
-
-**depcat** is a zero-dependency CLI tool that reads `pnpm-workspace.yaml` as the single source of truth and syncs `catalog:` / `catalog:<name>` references into all workspace `package.json` files.
-
 ## Commands
 
 ```bash
@@ -15,7 +11,7 @@ pnpm check:fix     # Biome auto-fix
 pnpm typecheck     # TypeScript type-check only (no emit)
 pnpm test          # Run all tests once (vitest)
 pnpm test:watch    # Vitest in watch mode
-pnpm depcat        # Run the built CLI: node dist/index.js
+pnpm depcat        # Build and run the CLI
 ```
 
 Run a single test file:
@@ -25,52 +21,52 @@ pnpm vitest run test/workspace.test.ts
 
 ## Architecture
 
-All source modules are pure functions with no runtime dependencies — only Node.js built-ins.
-
 | Module | Responsibility |
 |--------|---------------|
-| `src/index.ts` | CLI entry: arg parsing, find `pnpm-workspace.yaml` (up to 5 parent dirs), orchestration |
+| `src/index.ts` | CLI entry: arg parsing, workspace lookup, orchestration, interactive resolution |
 | `src/types.ts` | Shared type definitions only |
 | `src/workspace.ts` | `parseWorkspace()` → `{ patterns, catalogMap }` |
 | `src/sync.ts` | `findPackageJsons()` + `syncPackageJson()` |
+| `src/output.ts` | All `console.log` output with picocolors styling |
 
 ### Key type: `CatalogMap`
 
 ```ts
-type CatalogMap = Record<string, string>
-// e.g. { react: 'catalog:', typescript: 'catalog:dev' }
+type CatalogEntry =
+  | { kind: 'unique'; ref: string }               // appears in exactly one catalog
+  | { kind: 'ambiguous'; refs: Array<{ ref: string; version: string }> }; // appears in multiple
+
+type CatalogMap = Record<string, CatalogEntry>;
 ```
 
-Values are the actual strings written to `package.json`. `catalog:` for the default block, `catalog:<name>` for named catalogs. No null sentinel.
+`unique` entries have a pre-resolved `ref` (e.g. `'catalog:'` or `'catalog:dev'`) that is written directly to `package.json`. `ambiguous` entries require user resolution per workspace package.
 
 ### Data flow
 
 ```
 pnpm-workspace.yaml
-  → parseWorkspace()     # workspace.ts → { patterns, catalogMap }
-  → findPackageJsons()   # sync.ts → list of package.json paths
-  → syncPackageJson()    # sync.ts → update each file
+  → parseWorkspace()        # workspace.ts → { patterns, catalogMap }
+  → findPackageJsons()      # sync.ts → list of package.json paths
+  → for each file:
+      resolveFileAmbiguous()  # index.ts → interactive select per ambiguous dep
+      syncPackageJson()       # sync.ts → write resolved refs to disk
 ```
 
-## CLI Usage
+### Ambiguous package resolution
 
-```
-depcat [options]
+When a package appears in multiple catalogs (e.g. `react` in both `catalog:react18` and `catalog:react19`), resolution is **per workspace package**:
 
-Options:
-  -n, --dry-run   Preview changes without writing any files
-      --version   Print version
-  -h, --help      Print this help message
-```
+- **TTY + not `--check`**: `@inquirer/select` prompt with file/field/version context embedded in the message; each workspace package resolves independently
+- **Non-TTY or `--check`**: skipped, collected by name (deduplicated), printed as a warning
 
-Searches up to 5 parent directories for `pnpm-workspace.yaml`.
+`syncPackageJson` receives a flat `Record<string, string>` (already resolved) — it has no knowledge of ambiguity.
 
 ## Build & Publishing
 
-- Output is a single minified ESM file with `#!/usr/bin/env node` shebang at `dist/index.js`
-- CI (`publish.yml`) triggers on `v*.*.*` tags: check → typecheck → test → build → `npm publish` with provenance
-- `pnpm release` bumps the version; tag must match `package.json` version before publish
+- Output: single minified ESM at `dist/index.js` with `#!/usr/bin/env node` shebang
+- CI (`publish.yml`) triggers on `v*.*.*` tags: verifies tag matches `package.json` version, then runs check → typecheck → test → build → `npm publish --provenance`
+- To release: bump version in `package.json`, commit, tag (`git tag vX.Y.Z`), push with `--tags`
 
 ## Testing
 
-Tests use vitest and operate on real temporary directories (`mkdtempSync`) — no mocking. Test files: `test/workspace.test.ts`, `test/sync.test.ts`.
+Tests use real temporary directories (`mkdtempSync`) — no mocking. Always run `pnpm check` before committing; Biome formatting must pass in CI.
