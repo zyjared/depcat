@@ -1,7 +1,7 @@
 {
   "name": "depcat",
-  "version": "0.0.1",
-  "description": "Sync pnpm workspace catalog from a config file",
+  "version": "0.1.0",
+  "description": "Sync catalog: references across pnpm workspace packages",
   "type": "module",
   "bin": {
     "depcat": "./dist/index.js"
@@ -22,7 +22,7 @@
     "test:watch": "vitest",
     "release": "pnpm version",
     "prepublishOnly": "pnpm check && pnpm typecheck && pnpm test && pnpm build",
-    "depcat": "node dist/index.js"
+    "depcat": "pnpm run build && node dist/index.js"
   },
   "engines": {
     "node": ">=18"
@@ -35,5 +35,11 @@
     "typescript": "catalog:dev",
     "vitest": "catalog:dev"
   },
-  "packageManager": "pnpm@10.33.0"
+  "packageManager": "pnpm@10.33.0",
+  "dependencies": {
+    "@inquirer/select": "^5.1.2",
+    "picocolors": "^1.1.1",
+    "tinyglobby": "^0.2.15",
+    "yaml": "^2.8.3"
+  }
 }

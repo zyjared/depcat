@@ -1,11 +1,8 @@
 # depcat
 
-Sync your pnpm workspace [catalog](https://pnpm.io/catalogs) from a single config file.
+Sync [`catalog:`](https://pnpm.io/catalogs) references across all `package.json` files in a pnpm workspace.
 
-- Writes `pnpm-workspace.yaml` (`catalog:` / `catalogs:` blocks) from your config
-- Updates `catalog:` references in all workspace `package.json` files (including root)
-- Sorts dependencies alphabetically
-- Reuses existing version pins by default; optionally fetches latest from npm
+Reads `pnpm-workspace.yaml` as the single source of truth. For every dependency declared in a `catalog:` or `catalogs:` block, depcat finds matching entries in all workspace `package.json` files and rewrites them to use the correct catalog reference.
 
 ## Install
 
@@ -25,39 +22,16 @@ pnpm dlx depcat
 depcat [options]
 
 Options:
-  -l, --fetch-latest  Fetch latest versions from npm registry
-  -d, --dry-run       Preview changes without writing any files
-  -v, --version       Print version
-  -h, --help          Print this help message
+  -c, --check     Check whether all references are in sync, exit 1 if not
+      --version   Print version
+  -h, --help      Print this help message
 ```
 
-## Configuration
+Run from anywhere inside the workspace — depcat searches up to 5 parent directories for `pnpm-workspace.yaml`.
 
-Create a `catalog.config.mjs` in your project root:
+## Example
 
-```js
-// catalog.config.mjs
-export default [
-  // Strings and arrays → default catalog
-  'react',
-  'react-dom',
-  ['zustand', 'zod'],
-
-  // Object → named catalogs
-  {
-    ui: ['tailwindcss', 'clsx', 'tailwind-merge'],
-    dev: ['typescript', 'vite', '@biomejs/biome'],
-  },
-]
-```
-
-Then run:
-
-```bash
-depcat
-```
-
-This generates (or updates) `pnpm-workspace.yaml`:
+Given this `pnpm-workspace.yaml`:
 
 ```yaml
 packages:
@@ -65,29 +39,22 @@ packages:
   - "packages/*"
 
 catalog:
-  react: "^19.1.0"
-  react-dom: "^19.1.0"
-  zod: "^3.24.2"
-  zustand: "^5.0.3"
+  react: "^18.3.1"
+  react-dom: "^18.3.1"
 
 catalogs:
   dev:
-    "@biomejs/biome": "^1.9.4"
     typescript: "^5.8.3"
     vite: "^6.3.5"
-  ui:
-    clsx: "^2.1.1"
-    tailwind-merge: "^3.3.0"
-    tailwindcss: "^4.1.6"
 ```
 
-And updates each workspace `package.json` to use catalog references:
+Running `depcat` rewrites all workspace `package.json` files:
 
 ```json
 {
   "dependencies": {
     "react": "catalog:",
-    "zustand": "catalog:"
+    "react-dom": "catalog:"
   },
   "devDependencies": {
     "typescript": "catalog:dev",
@@ -96,34 +63,24 @@ And updates each workspace `package.json` to use catalog references:
 }
 ```
 
-## Config format
+## Multi-catalog packages
 
-The default export can be an **array** or an **object**.
+If the same package appears in multiple catalogs (e.g. `react` in both `catalog:react18` and `catalog:react19`), depcat handles it per workspace package:
 
-| Entry type            | Result                        |
-| --------------------- | ----------------------------- |
-| `"pkg"`               | Added to default catalog      |
-| `["pkg-a", "pkg-b"]`  | Added to default catalog      |
-| `{ name: ["pkg-a"] }` | Added to named catalog `name` |
+- **Interactive TTY** — prompts you to choose a catalog for each occurrence
+- **Non-TTY / `--check`** — skips ambiguous packages and prints a warning
 
-Object shorthand (equivalent to wrapping in an array):
+Each workspace package independently resolves which catalog to use, so `packages/app` can use `catalog:react18` while `packages/web` uses `catalog:react19`.
 
-```js
-export default {
-  ui: ['tailwindcss'],
-  dev: ['typescript'],
-}
-```
+## CI
 
-## Version resolution
-
-By default, depcat reuses version pins already present in `pnpm-workspace.yaml`. New packages fall back to `"latest"`.
-
-Use `--fetch-latest` (`-l`) to pull the current latest version from npm for all packages:
+Use `--check` to verify all references are in sync without writing any files:
 
 ```bash
-depcat --fetch-latest
+depcat --check
 ```
+
+Exits `1` if any references are out of sync or ambiguous packages were skipped.
 
 ## Requirements
 

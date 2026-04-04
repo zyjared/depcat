@@ -1,124 +1,54 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import type { VersionMap, WorkspaceFile } from './types';
+import { existsSync, readFileSync } from 'node:fs';
+import { parse } from 'yaml';
+import type { CatalogMap, Workspace } from './types.ts';
 
-const DEFAULT_PATTERNS = ['apps/*', 'packages/*'];
+type WorkspaceYaml = {
+  packages?: string[];
+  catalog?: Record<string, string>;
+  catalogs?: Record<string, Record<string, string>>;
+};
 
-/** 将含 @ 或 / 的包名用双引号包裹，确保 YAML 合法 */
-const yamlKey = (key: string) =>
-  key.includes('@') || key.includes('/') ? `"${key}"` : key;
+export function parseWorkspace(workspacePath: string): Workspace {
+  if (!existsSync(workspacePath)) return { patterns: [], catalogMap: {} };
 
-/**
- * 单次解析 pnpm-workspace.yaml，同时提取：
- *   - packages: 块中的工作空间 glob 模式
- *   - catalog:/catalogs: 块中的已有版本号（用于复用，避免无谓的 npm 请求）
- */
-export function parseWorkspaceFile(workspacePath: string): WorkspaceFile {
-  if (!existsSync(workspacePath)) return { patterns: [], versions: {} };
+  let doc: WorkspaceYaml;
+  try {
+    doc = parse(readFileSync(workspacePath, 'utf8')) as WorkspaceYaml;
+  } catch (err) {
+    throw new Error(
+      `Failed to parse pnpm-workspace.yaml: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 
-  const patterns: string[] = [];
-  const versions: VersionMap = {};
-  let section: 'packages' | 'catalog' | 'catalogs' | null = null;
-  let currentCatalog: string | null = null;
+  const patterns = doc.packages ?? [];
 
-  for (const raw of readFileSync(workspacePath, 'utf8').split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line) continue;
+  // 收集每个包在各 catalog 中的所有 { version, ref }
+  const collected: Record<string, Array<{ version: string; ref: string }>> = {};
 
-    // 非缩进行：识别节名，其他顶层 key 重置状态
-    if (!raw.startsWith(' ') && !raw.startsWith('\t')) {
-      currentCatalog = null;
-      if (line === 'packages:') {
-        section = 'packages';
-        continue;
-      }
-      if (line === 'catalog:') {
-        section = 'catalog';
-        continue;
-      }
-      if (line === 'catalogs:') {
-        section = 'catalogs';
-        continue;
-      }
-      section = null;
-      continue;
-    }
+  for (const [pkg, version] of Object.entries(doc.catalog ?? {})) {
+    if (!collected[pkg]) collected[pkg] = [];
+    collected[pkg].push({ version, ref: 'catalog:' });
+  }
 
-    switch (section) {
-      case 'packages': {
-        const m = raw.match(/^\s*-\s*["']?(.+?)["']?\s*$/);
-        if (m?.[1]) patterns.push(m[1]);
-        break;
-      }
-      case 'catalog': {
-        // 格式：  "pkg": "version"
-        const m = raw.match(/^ {2}("?[^":]+"?):\s*"([^"]+)"\s*$/);
-        if (m?.[1] && m[2]) versions[m[1].replace(/^"|"$/g, '')] = m[2];
-        break;
-      }
-      case 'catalogs': {
-        // 两格缩进：catalog 组名；四格缩进：包条目
-        const group = raw.match(/^ {2}(\w[\w-]*):\s*$/);
-        if (group?.[1]) {
-          currentCatalog = group[1];
-          break;
-        }
-        if (!currentCatalog) break;
-        const m = raw.match(/^ {4}("?[^":]+"?):\s*"([^"]+)"\s*$/);
-        if (m?.[1] && m[2]) versions[m[1].replace(/^"|"$/g, '')] = m[2];
-        break;
-      }
+  for (const [name, pkgs] of Object.entries(doc.catalogs ?? {})) {
+    for (const [pkg, version] of Object.entries(pkgs)) {
+      if (!collected[pkg]) collected[pkg] = [];
+      collected[pkg].push({ version, ref: `catalog:${name}` });
     }
   }
 
-  return { patterns, versions };
-}
-
-/** 将规范化的 catalog 数据序列化为 pnpm-workspace.yaml 文本 */
-export function buildWorkspaceYaml(
-  workspacePatterns: string[],
-  defaultCatalog: string[],
-  groupedCatalogs: Record<string, string[]>,
-  versions: VersionMap,
-): string {
-  const patterns =
-    workspacePatterns.length > 0 ? workspacePatterns : DEFAULT_PATTERNS;
-  const lines: string[] = [
-    'packages:',
-    ...patterns.map((p) => `  - "${p}"`),
-    '',
-  ];
-
-  if (defaultCatalog.length > 0) {
-    lines.push('catalog:');
-    for (const pkg of defaultCatalog) {
-      lines.push(`  ${yamlKey(pkg)}: "${versions[pkg] ?? 'latest'}"`);
-    }
-    lines.push('');
-  }
-
-  lines.push('catalogs:');
-  for (const [name, pkgs] of Object.entries(groupedCatalogs)) {
-    lines.push(`  ${name}:`);
-    for (const pkg of pkgs) {
-      lines.push(`    ${yamlKey(pkg)}: "${versions[pkg] ?? 'latest'}"`);
+  // 单一来源 → unique；多来源 → ambiguous（保留版本信息用于展示）
+  const catalogMap: CatalogMap = {};
+  for (const [pkg, entries] of Object.entries(collected)) {
+    if (entries.length === 1 && entries[0]) {
+      catalogMap[pkg] = { kind: 'unique', ref: entries[0].ref };
+    } else {
+      catalogMap[pkg] = {
+        kind: 'ambiguous',
+        refs: entries.map(({ version, ref }) => ({ version, ref })),
+      };
     }
   }
 
-  return `${lines.join('\n')}\n`;
-}
-
-export function writeWorkspaceYaml(
-  root: string,
-  content: string,
-  dryRun: boolean,
-): void {
-  if (dryRun) {
-    console.log('\n--- pnpm-workspace.yaml (dry-run) ---');
-    console.log(content);
-    console.log('---');
-  } else {
-    writeFileSync(join(root, 'pnpm-workspace.yaml'), content);
-    console.log('\n✓ pnpm-workspace.yaml updated');
-  }
+  return { patterns, catalogMap };
 }

@@ -1,47 +1,127 @@
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, relative } from 'node:path';
 import { parseArgs } from 'node:util';
+import select from '@inquirer/select';
+import pc from 'picocolors';
 import { version as VERSION } from '../package.json';
-import { normalizeCatalogConfig } from './catalog';
-import { fetchLatestVersions } from './npm';
 import {
-  getWorkspacePackageJsonPaths,
-  updatePackageJson,
-} from './package-json.ts';
-import type {
-  CatalogConfig,
-  DepToCatalog,
-  RunOptions,
-  VersionMap,
-} from './types.ts';
-import {
-  buildWorkspaceYaml,
-  parseWorkspaceFile,
-  writeWorkspaceYaml,
-} from './workspace.ts';
+  printAllInSync,
+  printCatalogCount,
+  printCheckFailed,
+  printFile,
+  printHint,
+  printSkipped,
+  printSyncDone,
+} from './output.ts';
+import { DEP_FIELDS, findPackageJsons, syncPackageJson } from './sync.ts';
+import type { CatalogMap } from './types.ts';
+import { parseWorkspace } from './workspace.ts';
 
 function printHelp(): void {
   console.log(`depcat v${VERSION}
 
-Sync pnpm workspace catalog from a config file.
+Sync catalog references across pnpm workspace packages.
 
 Usage:
   depcat [options]
 
 Options:
-  -l, --fetch-latest  Fetch latest versions from npm registry
-  -d, --dry-run       Preview changes without writing any files
-  -v, --version       Print version
-  -h, --help          Print this help message`);
+  -c, --check     Check whether all references are in sync, exit 1 if not
+      --version   Print version number
+  -h, --help      Print this help message`);
 }
 
-function parseCliArgs(): RunOptions {
+/** 从 cwd 开始向上查找 pnpm-workspace.yaml（最多 5 层） */
+function findWorkspacePath(from: string): string {
+  let dir = from;
+  for (let i = 0; i < 5; i++) {
+    const p = join(dir, 'pnpm-workspace.yaml');
+    if (existsSync(p)) return p;
+    const parent = join(dir, '..');
+    if (parent === dir) break;
+    dir = parent;
+  }
+  throw new Error(
+    'pnpm-workspace.yaml not found. Run depcat from within a pnpm workspace directory.',
+  );
+}
+
+const FIELD_SHORT: Record<string, string> = {
+  dependencies: 'dep',
+  devDependencies: 'dev',
+  peerDependencies: 'peer',
+  optionalDependencies: 'opt',
+};
+
+type SkippedEntry = {
+  name: string;
+  refs: Array<{ ref: string; version: string }>;
+};
+
+/** 从 CatalogMap 提取 unique 包的映射（所有文件共用） */
+function buildUniqueMap(catalogMap: CatalogMap): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const [pkg, entry] of Object.entries(catalogMap)) {
+    if (entry.kind === 'unique') map[pkg] = entry.ref;
+  }
+  return map;
+}
+
+/**
+ * 处理单个文件中的 ambiguous 包：
+ * - 有 TTY 且非 check 模式：逐个交互选择，返回该文件的 per-dep 解析结果
+ * - 否则：收集到 skipped（调用方负责去重）
+ */
+async function resolveFileAmbiguous(
+  filePath: string,
+  rel: string,
+  catalogMap: CatalogMap,
+  isInteractive: boolean,
+): Promise<{ perFile: Record<string, string>; skipped: SkippedEntry[] }> {
+  let raw: Record<string, unknown>;
+  try {
+    raw = JSON.parse(readFileSync(filePath, 'utf8')) as Record<string, unknown>;
+  } catch {
+    return { perFile: {}, skipped: [] };
+  }
+
+  const perFile: Record<string, string> = {};
+  const skipped: SkippedEntry[] = [];
+
+  for (const field of DEP_FIELDS) {
+    const deps = raw[field];
+    if (!deps || typeof deps !== 'object') continue;
+    for (const [name, current] of Object.entries(
+      deps as Record<string, string>,
+    )) {
+      const entry = catalogMap[name];
+      if (entry?.kind !== 'ambiguous') continue;
+
+      if (isInteractive) {
+        const short = FIELD_SHORT[field] ?? field;
+        const maxLen = Math.max(...entry.refs.map((r) => r.ref.length));
+        const ref = await select({
+          message: `${pc.dim(rel)}  ${pc.dim(short)}  ${pc.bold(name)}  ${pc.dim(current)}`,
+          choices: entry.refs.map((r) => ({
+            name: `${r.ref.padEnd(maxLen)}  ${pc.dim(r.version)}`,
+            value: r.ref,
+          })),
+        });
+        perFile[name] = ref;
+      } else {
+        skipped.push({ name, refs: entry.refs });
+      }
+    }
+  }
+
+  return { perFile, skipped };
+}
+
+async function main(): Promise<void> {
   const { values } = parseArgs({
     options: {
-      'fetch-latest': { type: 'boolean', default: false, short: 'l' },
-      'dry-run': { type: 'boolean', default: false, short: 'd' },
-      version: { type: 'boolean', default: false, short: 'v' },
+      check: { type: 'boolean', default: false, short: 'c' },
+      version: { type: 'boolean', default: false },
       help: { type: 'boolean', default: false, short: 'h' },
     },
     strict: true,
@@ -57,129 +137,88 @@ function parseCliArgs(): RunOptions {
     process.exit(0);
   }
 
-  return {
-    fetchLatest: values['fetch-latest'] ?? false,
-    dryRun: values['dry-run'] ?? false,
-  };
-}
+  const check = values.check ?? false;
+  const workspacePath = findWorkspacePath(process.cwd());
+  const root = join(workspacePath, '..');
+  const { patterns, catalogMap } = parseWorkspace(workspacePath);
 
-/** 从 cwd 开始向上查找 catalog.config.[m]js（最多 5 层） */
-function findConfigPath(from: string): string {
-  const candidates = ['catalog.config.mjs', 'catalog.config.js'];
-  let dir = from;
-  for (let i = 0; i < 5; i++) {
-    for (const name of candidates) {
-      const p = join(dir, name);
-      if (existsSync(p)) return p;
-    }
-    const parent = join(dir, '..');
-    if (parent === dir) break;
-    dir = parent;
+  const entryCount = Object.keys(catalogMap).length;
+  if (entryCount === 0) {
+    console.log('No catalog entries found in pnpm-workspace.yaml');
+    if (check) process.exit(1);
+    return;
   }
-  throw new Error(`catalog.config.[m]js not found. Create one in: ${from}`);
-}
+  printCatalogCount(entryCount);
 
-/** 根据选项决定版本来源：复用已有版本或从 npm 拉取最新 */
-async function resolveVersions(
-  pkgs: string[],
-  options: RunOptions,
-  existing: VersionMap,
-): Promise<VersionMap> {
-  if (options.fetchLatest) return fetchLatestVersions(pkgs);
-
-  let reused = 0;
-  let fallback = 0;
-  const versions = Object.fromEntries(
-    pkgs.map((pkg) => {
-      const v = existing[pkg];
-      v ? reused++ : fallback++;
-      return [pkg, v ?? 'latest'];
-    }),
-  );
-  console.log(
-    `Versions: ${reused} reused from pnpm-workspace.yaml, ${fallback} fallback to "latest"\n`,
-  );
-  return versions;
-}
-
-async function main(): Promise<void> {
-  const options = parseCliArgs();
-  const configPath = findConfigPath(process.cwd());
-  const root = join(configPath, '..');
-
-  // 用 file:// URL 加载，确保在 Windows 下绝对路径也能正确解析
-  const { default: config } = (await import(
-    pathToFileURL(configPath).href
-  )) as {
-    default: CatalogConfig;
-  };
-
-  const { defaultCatalog, groupedCatalogs } = normalizeCatalogConfig(config);
-
-  // 构建 pkg → catalogName 映射，同时检测配置中的重复包
-  const depToCatalog: DepToCatalog = {};
-  const allPkgs: string[] = [];
-  const entries: Array<[string, string | null]> = [
-    ...defaultCatalog.map((p): [string, null] => [p, null]),
-    ...Object.entries(groupedCatalogs).flatMap(([name, pkgs]) =>
-      pkgs.map((p): [string, string] => [p, name]),
-    ),
+  const rootPkg = join(root, 'package.json');
+  const pkgPaths = [
+    ...(existsSync(rootPkg) ? [rootPkg] : []),
+    ...(await findPackageJsons(root, patterns)),
   ];
-  for (const [pkg, catalog] of entries) {
-    if (pkg in depToCatalog)
-      throw new Error(`Duplicate package in catalog config: "${pkg}"`);
-    depToCatalog[pkg] = catalog;
-    allPkgs.push(pkg);
-  }
 
-  const workspacePath = join(root, 'pnpm-workspace.yaml');
-  const workspaceFile = parseWorkspaceFile(workspacePath);
-  const versions = await resolveVersions(
-    allPkgs,
-    options,
-    workspaceFile.versions,
-  );
+  const uniqueMap = buildUniqueMap(catalogMap);
+  const isInteractive = process.stdout.isTTY === true && !check;
 
-  // 写入 pnpm-workspace.yaml
-  const yaml = buildWorkspaceYaml(
-    workspaceFile.patterns,
-    defaultCatalog,
-    groupedCatalogs,
-    versions,
-  );
-  writeWorkspaceYaml(root, yaml, options.dryRun);
+  // skipped 按包名去重：非交互模式下同一包在多个文件中只记录一次
+  const skippedMap = new Map<string, SkippedEntry>();
 
-  // 更新根目录及各子包的 package.json
-  const rootPkgJson = join(root, 'package.json');
-  const pkgJsonPaths = [
-    ...(existsSync(rootPkgJson) ? [rootPkgJson] : []),
-    ...getWorkspacePackageJsonPaths(root, workspaceFile.patterns),
-  ];
   let changedFiles = 0;
-  let changedRefs = 0;
-  let sortedFields = 0;
+  let totalRefs = 0;
 
-  for (const filePath of pkgJsonPaths) {
-    const r = updatePackageJson(filePath, depToCatalog, options.dryRun);
-    if (r.changed) {
+  for (const filePath of pkgPaths) {
+    const rel = relative(root, filePath).replaceAll('\\', '/');
+
+    const { perFile, skipped } = await resolveFileAmbiguous(
+      filePath,
+      rel,
+      catalogMap,
+      isInteractive,
+    );
+    for (const entry of skipped) {
+      if (!skippedMap.has(entry.name)) skippedMap.set(entry.name, entry);
+    }
+
+    const fileResolvedMap = { ...uniqueMap, ...perFile };
+    const { changed, updatedRefs } = syncPackageJson(
+      filePath,
+      fileResolvedMap,
+      check,
+    );
+    if (changed) {
       changedFiles++;
-      changedRefs += r.updatedRefs;
-      sortedFields += r.sortedFields;
-      const rel = filePath.slice(root.length + 1).replaceAll('\\', '/');
-      console.log(
-        `✓ ${rel} (${r.updatedRefs} refs, ${r.sortedFields} sorted fields)`,
+      totalRefs += updatedRefs;
+      printFile(rel, updatedRefs, !check);
+    }
+  }
+
+  const skipped = [...skippedMap.values()];
+  printSkipped(skipped);
+
+  if (changedFiles === 0 && skipped.length === 0) {
+    printAllInSync();
+    return;
+  }
+
+  if (check) {
+    if (changedFiles > 0) {
+      printCheckFailed(changedFiles, totalRefs);
+      printHint('run depcat to fix');
+    }
+    if (skipped.length > 0) {
+      printHint(
+        'resolve ambiguous packages manually or run depcat interactively',
       );
     }
+    process.exit(1);
+  } else {
+    if (changedFiles > 0) {
+      printSyncDone(changedFiles, totalRefs);
+      printHint('pnpm install');
+    }
   }
-
-  console.log(
-    `\n✓ ${changedFiles} files, ${changedRefs} refs, ${sortedFields} sorted fields`,
-  );
-  if (options.dryRun) console.log('→ Dry-run only, no files written');
-  else console.log('→ Run: pnpm install');
 }
 
 main().catch((err) => {
-  console.error(err instanceof Error ? err.message : err);
+  console.error(err instanceof Error ? err.message : String(err));
   process.exit(1);
 });
