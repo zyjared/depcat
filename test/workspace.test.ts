@@ -50,15 +50,24 @@ describe('parseWorkspace', () => {
     const file = writeYaml(tmp, FULL_YAML);
     const { catalogMap } = parseWorkspace(file);
     expect(catalogMap.react).toEqual({ kind: 'unique', ref: 'catalog:' });
-    expect(catalogMap['react-dom']).toEqual({ kind: 'unique', ref: 'catalog:' });
+    expect(catalogMap['react-dom']).toEqual({
+      kind: 'unique',
+      ref: 'catalog:',
+    });
   });
 
   it('maps named catalog packages as unique with "catalog:<name>" ref', () => {
     const file = writeYaml(tmp, FULL_YAML);
     const { catalogMap } = parseWorkspace(file);
-    expect(catalogMap.typescript).toEqual({ kind: 'unique', ref: 'catalog:dev' });
+    expect(catalogMap.typescript).toEqual({
+      kind: 'unique',
+      ref: 'catalog:dev',
+    });
     expect(catalogMap.vite).toEqual({ kind: 'unique', ref: 'catalog:dev' });
-    expect(catalogMap.tailwindcss).toEqual({ kind: 'unique', ref: 'catalog:ui' });
+    expect(catalogMap.tailwindcss).toEqual({
+      kind: 'unique',
+      ref: 'catalog:ui',
+    });
   });
 
   it('marks packages in multiple named catalogs as ambiguous', () => {
@@ -97,8 +106,14 @@ describe('parseWorkspace', () => {
       'catalog:\n  "@types/node": "^20.0.0"\ncatalogs:\n  dev:\n    "@biomejs/biome": "^2.0.0"\n',
     );
     const { catalogMap } = parseWorkspace(file);
-    expect(catalogMap['@types/node']).toEqual({ kind: 'unique', ref: 'catalog:' });
-    expect(catalogMap['@biomejs/biome']).toEqual({ kind: 'unique', ref: 'catalog:dev' });
+    expect(catalogMap['@types/node']).toEqual({
+      kind: 'unique',
+      ref: 'catalog:',
+    });
+    expect(catalogMap['@biomejs/biome']).toEqual({
+      kind: 'unique',
+      ref: 'catalog:dev',
+    });
   });
 
   it('returns empty catalogMap when no catalog sections exist', () => {
@@ -115,6 +130,8 @@ describe('parseWorkspace', () => {
 
   it('throws on invalid YAML', () => {
     const file = writeYaml(tmp, 'catalog:\n  react: [unclosed\n');
-    expect(() => parseWorkspace(file)).toThrow('Failed to parse pnpm-workspace.yaml');
+    expect(() => parseWorkspace(file)).toThrow(
+      'Failed to parse pnpm-workspace.yaml',
+    );
   });
 });

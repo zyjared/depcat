@@ -26,16 +26,28 @@ describe('syncPackageJson', () => {
   afterEach(() => rmSync(tmp, { recursive: true }));
 
   it('replaces a version string with the default catalog reference', () => {
-    writePkg(tmp, { dependencies: { react: '^18.0.0', 'react-dom': '^18.0.0' } });
-    const r = syncPackageJson(join(tmp, 'package.json'), { react: 'catalog:', 'react-dom': 'catalog:' }, false);
+    writePkg(tmp, {
+      dependencies: { react: '^18.0.0', 'react-dom': '^18.0.0' },
+    });
+    const r = syncPackageJson(
+      join(tmp, 'package.json'),
+      { react: 'catalog:', 'react-dom': 'catalog:' },
+      false,
+    );
     expect(r.updatedRefs).toBe(2);
     expect(readPkg(tmp).dependencies.react).toBe('catalog:');
     expect(readPkg(tmp).dependencies['react-dom']).toBe('catalog:');
   });
 
   it('replaces a version string with a named catalog reference', () => {
-    writePkg(tmp, { devDependencies: { vite: '^5.0.0', typescript: '^5.0.0' } });
-    syncPackageJson(join(tmp, 'package.json'), { vite: 'catalog:dev', typescript: 'catalog:dev' }, false);
+    writePkg(tmp, {
+      devDependencies: { vite: '^5.0.0', typescript: '^5.0.0' },
+    });
+    syncPackageJson(
+      join(tmp, 'package.json'),
+      { vite: 'catalog:dev', typescript: 'catalog:dev' },
+      false,
+    );
     const pkg = readPkg(tmp);
     expect(pkg.devDependencies.vite).toBe('catalog:dev');
     expect(pkg.devDependencies.typescript).toBe('catalog:dev');
@@ -43,21 +55,33 @@ describe('syncPackageJson', () => {
 
   it('updates an existing catalog ref to a different catalog', () => {
     writePkg(tmp, { dependencies: { react: 'catalog:react18' } });
-    const r = syncPackageJson(join(tmp, 'package.json'), { react: 'catalog:react19' }, false);
+    const r = syncPackageJson(
+      join(tmp, 'package.json'),
+      { react: 'catalog:react19' },
+      false,
+    );
     expect(r.updatedRefs).toBe(1);
     expect(readPkg(tmp).dependencies.react).toBe('catalog:react19');
   });
 
   it('does not count already-correct references as updates', () => {
     writePkg(tmp, { dependencies: { react: 'catalog:' } });
-    const r = syncPackageJson(join(tmp, 'package.json'), { react: 'catalog:' }, false);
+    const r = syncPackageJson(
+      join(tmp, 'package.json'),
+      { react: 'catalog:' },
+      false,
+    );
     expect(r.updatedRefs).toBe(0);
     expect(r.changed).toBe(false);
   });
 
   it('skips packages absent from resolvedMap', () => {
     writePkg(tmp, { dependencies: { react: '^18.0.0', lodash: '^4.0.0' } });
-    const r = syncPackageJson(join(tmp, 'package.json'), { react: 'catalog:' }, false);
+    const r = syncPackageJson(
+      join(tmp, 'package.json'),
+      { react: 'catalog:' },
+      false,
+    );
     expect(r.updatedRefs).toBe(1);
     expect(readPkg(tmp).dependencies.lodash).toBe('^4.0.0');
   });
@@ -78,16 +102,29 @@ describe('syncPackageJson', () => {
     });
     const r = syncPackageJson(
       join(tmp, 'package.json'),
-      { react: 'catalog:', vite: 'catalog:dev', 'react-dom': 'catalog:', sharp: 'catalog:' },
+      {
+        react: 'catalog:',
+        vite: 'catalog:dev',
+        'react-dom': 'catalog:',
+        sharp: 'catalog:',
+      },
       false,
     );
     expect(r.updatedRefs).toBe(4);
   });
 
   it('does not write to disk in dry-run mode', () => {
-    const original = JSON.stringify({ dependencies: { react: '^18.0.0' } }, null, 2);
+    const original = JSON.stringify(
+      { dependencies: { react: '^18.0.0' } },
+      null,
+      2,
+    );
     writeFileSync(join(tmp, 'package.json'), original);
-    const r = syncPackageJson(join(tmp, 'package.json'), { react: 'catalog:' }, true);
+    const r = syncPackageJson(
+      join(tmp, 'package.json'),
+      { react: 'catalog:' },
+      true,
+    );
     expect(r.changed).toBe(true);
     expect(readFileSync(join(tmp, 'package.json'), 'utf8')).toBe(original);
   });
